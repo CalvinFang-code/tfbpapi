@@ -64,8 +64,15 @@ def get_nested_value(data: dict, path: str) -> Any:
 
         List of dicts - extract property from each item:
             get_nested_value(
-                {"media": {"carbon_source": [{"compound": "glucose"}, {"compound": "galactose"}]}},
-                "media.carbon_source.compound"
+                {
+                    "media": {
+                        "carbon_source": [
+                            {"compound": "glucose"},
+                            {"compound": "galactose"},
+                        ]
+                    }
+                },
+                "media.carbon_source.compound",
             )
             Returns: ["glucose", "galactose"]
 
@@ -82,7 +89,8 @@ def get_nested_value(data: dict, path: str) -> Any:
                 return None
             current = current[key]
         elif isinstance(current, list):
-            # If current is a list and we have more keys, extract property from each item
+            # If current is a list and we have more keys,
+            # extract property from each item
             if i < len(keys):
                 # Extract the remaining path from each list item
                 remaining_path = ".".join(keys[i:])
@@ -216,7 +224,9 @@ class VirtualDB:
             return sorted(mappings.keys())
 
         if repo_id is not None or config_name is not None:
-            raise ValueError("Both repo_id and config_name must be provided, or neither")
+            raise ValueError(
+                "Both repo_id and config_name must be provided, or neither"
+            )
 
         # Get all fields across all datasets
         all_fields: set[str] = set()
@@ -368,7 +378,9 @@ class VirtualDB:
 
             # Apply filters
             if filters:
-                metadata_df = self._apply_filters(metadata_df, filters, repo_id, config_name)
+                metadata_df = self._apply_filters(
+                    metadata_df, filters, repo_id, config_name
+                )
 
             # If complete=True, join with full data
             if complete:
@@ -390,10 +402,11 @@ class VirtualDB:
                 for field in fields:
                     if field in metadata_df.columns and field not in keep_cols:
                         keep_cols.append(field)
-                metadata_df = metadata_df[keep_cols]
+                metadata_df = metadata_df[keep_cols].copy()
 
-            # Add dataset identifier
+            # Add dataset identifier (ensure copy before modifying)
             if "dataset_id" not in metadata_df.columns:
+                metadata_df = metadata_df.copy()
                 metadata_df["dataset_id"] = f"{repo_id}/{config_name}"
 
             results.append(metadata_df)
@@ -404,9 +417,7 @@ class VirtualDB:
         # Concatenate results, filling NaN for missing columns
         return pd.concat(results, ignore_index=True, sort=False)
 
-    def materialize_views(
-        self, datasets: list[tuple[str, str]] | None = None
-    ) -> None:
+    def materialize_views(self, datasets: list[tuple[str, str]] | None = None) -> None:
         """
         Build and cache metadata DataFrames for faster subsequent queries.
 
@@ -430,9 +441,7 @@ class VirtualDB:
             # Build and cache
             self._build_metadata_table(repo_id, config_name, use_cache=False)
 
-    def invalidate_cache(
-        self, datasets: list[tuple[str, str]] | None = None
-    ) -> None:
+    def invalidate_cache(self, datasets: list[tuple[str, str]] | None = None) -> None:
         """
         Clear cached metadata DataFrames.
 
@@ -457,8 +466,8 @@ class VirtualDB:
         """
         Build metadata table for a single dataset.
 
-        Extracts sample-level metadata from experimental conditions hierarchy
-        and field definitions, with normalization and missing value handling.
+        Extracts sample-level metadata from experimental conditions hierarchy and field
+        definitions, with normalization and missing value handling.
 
         :param repo_id: Repository ID
         :param config_name: Configuration name
@@ -485,10 +494,14 @@ class VirtualDB:
                 return pd.DataFrame()
 
             # Extract repo/config-level metadata
-            repo_metadata = self._extract_repo_level(card, config_name, property_mappings)
+            repo_metadata = self._extract_repo_level(
+                card, config_name, property_mappings
+            )
 
             # Extract field-level metadata
-            field_metadata = self._extract_field_level(card, config_name, property_mappings)
+            field_metadata = self._extract_field_level(
+                card, config_name, property_mappings
+            )
 
             # Get sample-level data from HuggingFace
             config = card.get_config(config_name)
@@ -523,7 +536,7 @@ class VirtualDB:
 
             return df
 
-        except Exception as e:
+        except Exception:
             # Return empty DataFrame on error
             return pd.DataFrame()
 
@@ -560,7 +573,11 @@ class VirtualDB:
                 continue
 
             # Build full path
-            full_path = f"experimental_conditions.{mapping.path}"
+            full_path = mapping.path
+
+            # Skip if path is None (shouldn't happen for repo-level, but be safe)
+            if full_path is None:
+                continue
 
             # Get value at path
             value = get_nested_value(conditions, full_path)
@@ -603,12 +620,13 @@ class VirtualDB:
         field_metadata: dict[str, dict[str, Any]] = {}
 
         # Group property mappings by field
-        field_mappings: dict[str, dict[str, str]] = {}
+        field_mappings: dict[str, dict[str, str | None]] = {}
         for prop_name, mapping in property_mappings.items():
             if mapping.field is not None:
                 field_name = mapping.field
                 if field_name not in field_mappings:
                     field_mappings[field_name] = {}
+                # Store path (can be None for column aliases)
                 field_mappings[field_name][prop_name] = mapping.path
 
         # Process each field that has mappings
@@ -624,8 +642,12 @@ class VirtualDB:
                     field_metadata[field_value] = {}
 
                 for prop_name, path in prop_paths.items():
-                    # Get value at path
-                    value = get_nested_value(definition, path)
+                    # Handle path=None case: use field_value directly
+                    if path is None:
+                        value = field_value
+                    else:
+                        # Get value at path
+                        value = get_nested_value(definition, path)
 
                     # Handle missing values
                     missing_label = self.config.missing_value_labels.get(prop_name)
@@ -640,7 +662,8 @@ class VirtualDB:
                     # Normalize using aliases
                     aliases = self.config.factor_aliases.get(prop_name)
                     normalized_values = [
-                        normalize_value(v, aliases, missing_label) for v in actual_values
+                        normalize_value(v, aliases, missing_label)
+                        for v in actual_values
                     ]
 
                     field_metadata[field_value][prop_name] = normalized_values
@@ -701,21 +724,31 @@ class VirtualDB:
             # Handle numeric range filters
             if isinstance(filter_value, tuple):
                 operator = filter_value[0]
+                # For numeric comparisons, try to convert column to numeric
+                # (normalize_value returns strings,
+                # but we need numeric for range queries)
+                try:
+                    df_field = pd.to_numeric(df[field], errors="coerce")
+                except (ValueError, TypeError):
+                    df_field = df[field]
+
                 if operator == "between" and len(filter_value) == 3:
-                    df = df[(df[field] >= filter_value[1]) & (df[field] <= filter_value[2])]
+                    df = df[
+                        (df_field >= filter_value[1]) & (df_field <= filter_value[2])
+                    ]
                 elif operator in (">=", ">", "<=", "<", "==", "!="):
                     if operator == ">=":
-                        df = df[df[field] >= filter_value[1]]
+                        df = df[df_field >= filter_value[1]]
                     elif operator == ">":
-                        df = df[df[field] > filter_value[1]]
+                        df = df[df_field > filter_value[1]]
                     elif operator == "<=":
-                        df = df[df[field] <= filter_value[1]]
+                        df = df[df_field <= filter_value[1]]
                     elif operator == "<":
-                        df = df[df[field] < filter_value[1]]
+                        df = df[df_field < filter_value[1]]
                     elif operator == "==":
-                        df = df[df[field] == filter_value[1]]
+                        df = df[df_field == filter_value[1]]
                     elif operator == "!=":
-                        df = df[df[field] != filter_value[1]]
+                        df = df[df_field != filter_value[1]]
             else:
                 # Exact match with alias expansion
                 aliases = self.config.factor_aliases.get(field)
@@ -729,9 +762,11 @@ class VirtualDB:
                     df = df[df[field].isin(expanded_values)]
                 else:
                     # No aliases, exact match
-                    df = df[df[field] == filter_value]
+                    # Handle type conversion: normalize_value returns strings,
+                    # so convert filter_value to string for comparison
+                    df = df[df[field] == str(filter_value)]
 
-        return df
+        return df.copy()
 
     def _get_complete_data(
         self,
@@ -770,9 +805,14 @@ class VirtualDB:
             # Merge with metadata (metadata_df has normalized fields)
             # Drop metadata columns from full_df to avoid duplicates
             metadata_cols = [
-                col for col in metadata_df.columns if col not in ["sample_id", "dataset_id"]
+                col
+                for col in metadata_df.columns
+                if col not in ["sample_id", "dataset_id"]
             ]
-            full_df = full_df.drop(columns=[c for c in metadata_cols if c in full_df.columns], errors="ignore")
+            full_df = full_df.drop(
+                columns=[c for c in metadata_cols if c in full_df.columns],
+                errors="ignore",
+            )
 
             # Merge on sample_id
             result = full_df.merge(metadata_df, on="sample_id", how="left")
